@@ -1,0 +1,37 @@
+name: 'Upload to WebDAV'
+description: 'Upload files to WebDAV server'
+author: 'Your Name'
+
+inputs:
+  webdav-url:
+    description: 'WebDAV server URL'
+    required: true
+  webdav-username:
+    description: 'WebDAV username'
+    required: true
+  webdav-password:
+    description: 'WebDAV password'
+    required: true
+  webdav-root:
+    description: 'WebDAV root directory'
+    required: false
+    default: ''
+  source-directory:
+    description: 'Local directory to upload'
+    required: true
+  upload-directory:
+    description: 'Remote directory to upload to (defaults to timestamp or "release" for tagged versions)'
+    required: false
+    default: ''
+  debug:
+    description: 'Enable debug mode'
+    required: false
+    default: 'false'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
+
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'

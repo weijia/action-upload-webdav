@@ -1,0 +1,24 @@
+{
+  "name": "action-upload-webdav",
+  "version": "1.0.0",
+  "description": "GitHub Action to upload files to WebDAV server",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "ncc build src/index.js -o dist",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "github-action",
+    "webdav",
+    "upload"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "@actions/core": "^1.10.0",
+    "@actions/github": "^5.1.1"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.1"
+  }
+}
