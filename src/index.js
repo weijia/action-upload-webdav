@@ -147,8 +147,21 @@ async function createDirectory(directoryUrl) {
       core.info(`Directory created successfully: ${fixedDirectoryUrl}`);
       return true;
     } else if (response.statusCode === 405) {
-      core.info(`Directory already exists: ${fixedDirectoryUrl}`);
-      return true;
+      core.info(`Directory already exists: ${fixedDirectoryUrl}, deleting and recreating...`);
+      // 先删除已存在的目录
+      const deleteResponse = await webdavRequest('DELETE', fixedDirectoryUrl);
+      if (deleteResponse.statusCode === 204 || deleteResponse.statusCode === 200) {
+        core.info(`Directory deleted successfully: ${fixedDirectoryUrl}`);
+        // 重新创建目录
+        const recreateResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
+        if (recreateResponse.statusCode === 201) {
+          core.info(`Directory recreated successfully: ${fixedDirectoryUrl}`);
+          return true;
+        }
+      } else {
+        core.error(`Failed to delete directory ${fixedDirectoryUrl}: ${deleteResponse.statusCode} - ${deleteResponse.data}`);
+      }
+      return false;
     } else if (response.statusCode === 409) {
       core.info(`Directory conflict (409) - may need to create parent directories first: ${fixedDirectoryUrl}`);
       // 尝试创建父目录
