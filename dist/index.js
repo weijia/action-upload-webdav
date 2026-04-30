@@ -27724,10 +27724,12 @@ async function createDirectory(directoryUrl) {
       return false;
     } else if (response.statusCode === 409) {
       core.info(`Directory conflict (409) - may need to create parent directories first: ${fixedDirectoryUrl}`);
-      // 尝试创建父目录
-      const parentUrl = fixedDirectoryUrl.substring(0, fixedDirectoryUrl.lastIndexOf('/'));
-      if (parentUrl !== fixedDirectoryUrl) {
-        await createDirectory(parentUrl);
+      // 尝试创建父目录（去掉尾部斜杠后再提取父目录）
+      const urlWithoutSlash = fixedDirectoryUrl.endsWith('/') ? fixedDirectoryUrl.slice(0, -1) : fixedDirectoryUrl;
+      const parentPath = urlWithoutSlash.substring(0, urlWithoutSlash.lastIndexOf('/') + 1);
+      core.info(`Parent path: ${parentPath}`);
+      if (parentPath && parentPath !== fixedDirectoryUrl && parentPath !== urlWithoutSlash + '/') {
+        await createDirectory(parentPath);
         // 再次尝试创建当前目录
         const retryResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
         if (retryResponse.statusCode === 201 || retryResponse.statusCode === 405 || retryResponse.statusCode === 200) {
