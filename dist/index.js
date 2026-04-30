@@ -27660,6 +27660,17 @@ function webdavRequest(method, url, body = null, headers = {}) {
             core.info(`[DEBUG] Response: ${res.statusCode}`);
             core.info(`[DEBUG] Response data: ${data}`);
           }
+          
+          // 处理 301 重定向
+          if (res.statusCode === 301 && res.headers.location) {
+            core.info(`[DEBUG] Redirecting to: ${res.headers.location}`);
+            // 递归调用处理重定向
+            webdavRequest(method, res.headers.location, body, headers)
+              .then(resolve)
+              .catch(reject);
+            return;
+          }
+          
           resolve({ statusCode: res.statusCode, data });
         });
       });
@@ -27684,35 +27695,53 @@ function webdavRequest(method, url, body = null, headers = {}) {
 // 创建目录
 async function createDirectory(directoryUrl) {
   try {
-    core.info(`Creating directory: ${directoryUrl}`);
-    const response = await webdavRequest('MKCOL', directoryUrl);
+    // 确保目录 URL 以 / 结尾
+    const fixedDirectoryUrl = fixWebDavUrl(directoryUrl);
+    core.info(`Creating directory: ${fixedDirectoryUrl}`);
+    const response = await webdavRequest('MKCOL', fixedDirectoryUrl);
 
     if (response.statusCode === 201) {
-      core.info(`Directory created successfully: ${directoryUrl}`);
+      core.info(`Directory created successfully: ${fixedDirectoryUrl}`);
       return true;
-    } else if (response.statusCode === 405) {
-      core.info(`Directory already exists: ${directoryUrl}`);
-      return true;
+    } else if (response.statusCode === 405 || response.statusCode === 200 || response.statusCode === 301) {
+      // 405: 目录已存在
+      // 200: 某些服务器返回200表示成功（可能是重定向后的结果）
+      // 301: 重定向表示目录存在（带尾部斜杠的URL）
+      core.info(`Directory already exists or redirected: ${fixedDirectoryUrl}, deleting and recreating...`);
+      // 先删除已存在的目录
+      const deleteResponse = await webdavRequest('DELETE', fixedDirectoryUrl);
+      if (deleteResponse.statusCode === 204 || deleteResponse.statusCode === 200) {
+        core.info(`Directory deleted successfully: ${fixedDirectoryUrl}`);
+        // 重新创建目录
+        const recreateResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
+        if (recreateResponse.statusCode === 201) {
+          core.info(`Directory recreated successfully: ${fixedDirectoryUrl}`);
+          return true;
+        }
+      } else {
+        core.error(`Failed to delete directory ${fixedDirectoryUrl}: ${deleteResponse.statusCode} - ${deleteResponse.data}`);
+      }
+      return false;
     } else if (response.statusCode === 409) {
-      core.info(`Directory conflict (409) - may need to create parent directories first: ${directoryUrl}`);
+      core.info(`Directory conflict (409) - may need to create parent directories first: ${fixedDirectoryUrl}`);
       // 尝试创建父目录
-      const parentUrl = directoryUrl.substring(0, directoryUrl.lastIndexOf('/'));
-      if (parentUrl !== directoryUrl) {
+      const parentUrl = fixedDirectoryUrl.substring(0, fixedDirectoryUrl.lastIndexOf('/'));
+      if (parentUrl !== fixedDirectoryUrl) {
         await createDirectory(parentUrl);
         // 再次尝试创建当前目录
-        const retryResponse = await webdavRequest('MKCOL', directoryUrl);
-        if (retryResponse.statusCode === 201 || retryResponse.statusCode === 405) {
-          core.info(`Directory created successfully after parent creation: ${directoryUrl}`);
+        const retryResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
+        if (retryResponse.statusCode === 201 || retryResponse.statusCode === 405 || retryResponse.statusCode === 200) {
+          core.info(`Directory created successfully after parent creation: ${fixedDirectoryUrl}`);
           return true;
         }
       }
       return false;
     } else {
-      core.error(`Error creating directory ${directoryUrl}: ${response.statusCode} - ${response.data}`);
+      core.error(`Error creating directory ${fixedDirectoryUrl}: ${response.statusCode} - ${response.data}`);
       return false;
     }
   } catch (error) {
-    core.error(`Error creating directory ${directoryUrl}: ${error.message}`);
+    core.error(`Error creating directory ${fixedDirectoryUrl}: ${error.message}`);
     return false;
   }
 }
@@ -27767,7 +27796,7 @@ async function uploadFile(localPath, remoteUrl) {
 function fixWebDavUrl(url) {
   // 确保 URL 以 / 结尾
   if (!url.endsWith('/')) {
-    return url;
+    return url + '/';
   }
   return url;
 }
