@@ -146,8 +146,11 @@ async function createDirectory(directoryUrl) {
     if (response.statusCode === 201) {
       core.info(`Directory created successfully: ${fixedDirectoryUrl}`);
       return true;
-    } else if (response.statusCode === 405) {
-      core.info(`Directory already exists: ${fixedDirectoryUrl}, deleting and recreating...`);
+    } else if (response.statusCode === 405 || response.statusCode === 200 || response.statusCode === 301) {
+      // 405: 目录已存在
+      // 200: 某些服务器返回200表示成功（可能是重定向后的结果）
+      // 301: 重定向表示目录存在（带尾部斜杠的URL）
+      core.info(`Directory already exists or redirected: ${fixedDirectoryUrl}, deleting and recreating...`);
       // 先删除已存在的目录
       const deleteResponse = await webdavRequest('DELETE', fixedDirectoryUrl);
       if (deleteResponse.statusCode === 204 || deleteResponse.statusCode === 200) {
@@ -170,7 +173,7 @@ async function createDirectory(directoryUrl) {
         await createDirectory(parentUrl);
         // 再次尝试创建当前目录
         const retryResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
-        if (retryResponse.statusCode === 201 || retryResponse.statusCode === 405) {
+        if (retryResponse.statusCode === 201 || retryResponse.statusCode === 405 || retryResponse.statusCode === 200) {
           core.info(`Directory created successfully after parent creation: ${fixedDirectoryUrl}`);
           return true;
         }
@@ -181,7 +184,7 @@ async function createDirectory(directoryUrl) {
       return false;
     }
   } catch (error) {
-    core.error(`Error creating directory ${directoryUrl}: ${error.message}`);
+    core.error(`Error creating directory ${fixedDirectoryUrl}: ${error.message}`);
     return false;
   }
 }
