@@ -26,7 +26,7 @@ inputs:
   copy-to-latest:
     description: 'Also copy files to a "latest" directory under webdav-root (clears existing latest directory first)'
     required: false
-    default: 'false'
+    default: 'true'
   debug:
     description: 'Enable debug mode'
     required: false
