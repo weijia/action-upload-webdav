@@ -12,6 +12,7 @@ const WEBDAV_PASSWORD = core.getInput('webdav-password');
 const WEBDAV_ROOT = core.getInput('webdav-root') || '';
 const SOURCE_DIRECTORY = core.getInput('source-directory');
 const UPLOAD_DIRECTORY = core.getInput('upload-directory') || '';
+const COPY_TO_LATEST = core.getInput('copy-to-latest') === 'true';
 const DEBUG = core.getInput('debug') === 'true';
 
 // 上传成功和失败计数
@@ -103,17 +104,16 @@ function webdavRequest(method, url, body = null, headers = {}) {
             core.info(`[DEBUG] Response: ${res.statusCode}`);
             core.info(`[DEBUG] Response data: ${data}`);
           }
-          
+
           // 处理 301 重定向
           if (res.statusCode === 301 && res.headers.location) {
             core.info(`[DEBUG] Redirecting to: ${res.headers.location}`);
-            // 递归调用处理重定向
             webdavRequest(method, res.headers.location, body, headers)
               .then(resolve)
               .catch(reject);
             return;
           }
-          
+
           resolve({ statusCode: res.statusCode, data });
         });
       });
@@ -138,7 +138,6 @@ function webdavRequest(method, url, body = null, headers = {}) {
 // 创建目录
 async function createDirectory(directoryUrl) {
   try {
-    // 确保目录 URL 以 / 结尾
     const fixedDirectoryUrl = fixWebDavUrl(directoryUrl);
     core.info(`Creating directory: ${fixedDirectoryUrl}`);
     const response = await webdavRequest('MKCOL', fixedDirectoryUrl);
@@ -147,33 +146,15 @@ async function createDirectory(directoryUrl) {
       core.info(`Directory created successfully: ${fixedDirectoryUrl}`);
       return true;
     } else if (response.statusCode === 405 || response.statusCode === 200 || response.statusCode === 301) {
-      // 405: 目录已存在
-      // 200: 某些服务器返回200表示成功（可能是重定向后的结果）
-      // 301: 重定向表示目录存在（带尾部斜杠的URL）
-      core.info(`Directory already exists or redirected: ${fixedDirectoryUrl}, deleting and recreating...`);
-      // 先删除已存在的目录
-      const deleteResponse = await webdavRequest('DELETE', fixedDirectoryUrl);
-      if (deleteResponse.statusCode === 204 || deleteResponse.statusCode === 200) {
-        core.info(`Directory deleted successfully: ${fixedDirectoryUrl}`);
-        // 重新创建目录
-        const recreateResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
-        if (recreateResponse.statusCode === 201) {
-          core.info(`Directory recreated successfully: ${fixedDirectoryUrl}`);
-          return true;
-        }
-      } else {
-        core.error(`Failed to delete directory ${fixedDirectoryUrl}: ${deleteResponse.statusCode} - ${deleteResponse.data}`);
-      }
-      return false;
+      core.info(`Directory already exists: ${fixedDirectoryUrl}`);
+      return true;
     } else if (response.statusCode === 409) {
       core.info(`Directory conflict (409) - may need to create parent directories first: ${fixedDirectoryUrl}`);
-      // 尝试创建父目录（去掉尾部斜杠后再提取父目录）
       const urlWithoutSlash = fixedDirectoryUrl.endsWith('/') ? fixedDirectoryUrl.slice(0, -1) : fixedDirectoryUrl;
       const parentPath = urlWithoutSlash.substring(0, urlWithoutSlash.lastIndexOf('/') + 1);
       core.info(`Parent path: ${parentPath}`);
       if (parentPath && parentPath !== fixedDirectoryUrl && parentPath !== urlWithoutSlash + '/') {
         await createDirectory(parentPath);
-        // 再次尝试创建当前目录
         const retryResponse = await webdavRequest('MKCOL', fixedDirectoryUrl);
         if (retryResponse.statusCode === 201 || retryResponse.statusCode === 405 || retryResponse.statusCode === 200) {
           core.info(`Directory created successfully after parent creation: ${fixedDirectoryUrl}`);
@@ -187,6 +168,59 @@ async function createDirectory(directoryUrl) {
     }
   } catch (error) {
     core.error(`Error creating directory ${fixedDirectoryUrl}: ${error.message}`);
+    return false;
+  }
+}
+
+// 删除目录及其所有内容
+async function deleteDirectory(directoryUrl) {
+  try {
+    const fixedDirectoryUrl = fixWebDavUrl(directoryUrl);
+    core.info(`Deleting directory: ${fixedDirectoryUrl}`);
+
+    // 先尝试用 PROPFIND 获取目录内容，逐个删除
+    const depthHeader = { Depth: '1' };
+    const listResponse = await webdavRequest('PROPFIND', fixedDirectoryUrl, null, depthHeader);
+
+    if (listResponse.statusCode === 207) {
+      // 解析 XML 获取所有子资源的 URL
+      const hrefRegex = /<d:href>([^<]+)<\/d:href>/gi;
+      const hrefs = [];
+      let match;
+      while ((match = hrefRegex.exec(listResponse.data)) !== null) {
+        hrefs.push(match[1]);
+      }
+
+      // 从最深层开始删除（倒序，排除目录本身）
+      const sortedHrefs = hrefs
+        .map(h => decodeURIComponent(h))
+        .filter(h => h !== fixedDirectoryUrl && h !== fixedDirectoryUrl.replace(/\/$/, ''))
+        .sort((a, b) => b.split('/').length - a.split('/').length);
+
+      for (const href of sortedHrefs) {
+        const isDir = href.endsWith('/');
+        const method = isDir ? 'DELETE' : 'DELETE';
+        const delResponse = await webdavRequest(method, href);
+        if (delResponse.statusCode === 204 || delResponse.statusCode === 200) {
+          core.info(`Deleted: ${href}`);
+        } else {
+          core.warning(`Failed to delete ${href}: ${delResponse.statusCode}`);
+        }
+      }
+    }
+
+    // 最后删除目录本身
+    const deleteResponse = await webdavRequest('DELETE', fixedDirectoryUrl);
+    if (deleteResponse.statusCode === 204 || deleteResponse.statusCode === 200) {
+      core.info(`Directory deleted successfully: ${fixedDirectoryUrl}`);
+      return true;
+    } else {
+      core.warning(`Failed to delete directory ${fixedDirectoryUrl}: ${deleteResponse.statusCode} - ${deleteResponse.data}`);
+      // 某些服务器可能已经不存在，视为成功
+      return true;
+    }
+  } catch (error) {
+    core.error(`Error deleting directory: ${error.message}`);
     return false;
   }
 }
@@ -209,7 +243,6 @@ async function uploadFile(localPath, remoteUrl) {
     } else if (response.statusCode === 403) {
       core.error(`Permission denied (403) when uploading ${localPath} to ${remoteUrl}`);
       core.error(`Response data: ${response.data}`);
-      // 尝试修复权限问题 - 检查 URL 格式
       const fixedRemoteUrl = fixWebDavUrl(remoteUrl);
       if (fixedRemoteUrl !== remoteUrl) {
         core.info(`Trying with fixed URL: ${fixedRemoteUrl}`);
@@ -239,7 +272,6 @@ async function uploadFile(localPath, remoteUrl) {
 
 // 修复 WebDAV URL 格式
 function fixWebDavUrl(url) {
-  // 确保 URL 以 / 结尾
   if (!url.endsWith('/')) {
     return url + '/';
   }
@@ -269,14 +301,12 @@ function getContentType(filePath) {
 
 // 递归上传目录
 async function uploadDirectory(localDir, remoteDir) {
-  // 创建远程目录
   const dirCreated = await createDirectory(remoteDir);
   if (!dirCreated) {
     core.error(`Failed to create directory: ${remoteDir}`);
     return;
   }
 
-  // 读取本地目录
   try {
     const files = fs.readdirSync(localDir);
     core.info(`Uploading ${files.length} items from ${localDir}`);
@@ -287,10 +317,8 @@ async function uploadDirectory(localDir, remoteDir) {
       const stats = fs.statSync(localPath);
 
       if (stats.isDirectory()) {
-        // 递归上传子目录
         await uploadDirectory(localPath, remotePath);
       } else {
-        // 上传文件
         await uploadFile(localPath, remotePath);
       }
     }
@@ -309,6 +337,7 @@ async function main() {
   core.info(`WebDAV Username: ${WEBDAV_USERNAME}`);
   core.info(`WebDAV Root: ${WEBDAV_ROOT || '(empty)'}`);
   core.info(`Source Directory: ${SOURCE_DIRECTORY}`);
+  core.info(`Copy to Latest: ${COPY_TO_LATEST}`);
   core.info('====================================');
 
   // 获取上传目录
@@ -336,6 +365,42 @@ async function main() {
     core.info('Upload completed successfully!');
     core.info(`Uploaded to: ${remoteBaseUrl}`);
     core.setOutput('upload-url', remoteBaseUrl);
+  }
+
+  // ========== 复制到 latest 目录 ==========
+  if (COPY_TO_LATEST) {
+    core.info('====================================');
+    core.info('Starting latest directory copy...');
+    core.info('====================================');
+
+    const latestBaseUrl = `${WEBDAV_URL}${WEBDAV_ROOT ? `/${WEBDAV_ROOT}` : ''}/latest`;
+    core.info(`Latest directory URL: ${latestBaseUrl}`);
+
+    // 1. 清空 latest 目录
+    core.info('Clearing existing latest directory...');
+    await deleteDirectory(latestBaseUrl);
+
+    // 2. 上传到 latest 目录
+    const latestSuccessCount = successCount;
+    const latestFailureCount = failureCount;
+
+    await uploadDirectory(SOURCE_DIRECTORY, latestBaseUrl);
+
+    const latestUploaded = successCount - latestSuccessCount;
+    const latestFailed = failureCount - latestFailureCount;
+
+    core.info('====================================');
+    core.info(`Latest Directory Summary:`);
+    core.info(`Successfully uploaded: ${latestUploaded} files`);
+    core.info(`Failed to upload: ${latestFailed} files`);
+
+    if (latestFailed > 0) {
+      core.setFailed('Latest directory copy completed with errors!');
+      process.exit(1);
+    } else {
+      core.info(`Latest directory updated successfully: ${latestBaseUrl}`);
+      core.setOutput('latest-url', latestBaseUrl);
+    }
   }
 }
 
