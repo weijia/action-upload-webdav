@@ -200,7 +200,8 @@ async function deleteDirectory(directoryUrl) {
       for (const href of sortedHrefs) {
         const isDir = href.endsWith('/');
         const method = isDir ? 'DELETE' : 'DELETE';
-        const delResponse = await webdavRequest(method, href);
+        const fullHref = href.startsWith("http") ? href : `${WEBDAV_URL}${href.startsWith("/") ? "" : "/"}${href}`;
+        const delResponse = await webdavRequest(method, fullHref);
         if (delResponse.statusCode === 204 || delResponse.statusCode === 200) {
           core.info(`Deleted: ${href}`);
         } else {
@@ -236,7 +237,7 @@ async function uploadFile(localPath, remoteUrl) {
       'Content-Type': getContentType(localPath)
     });
 
-    if (response.statusCode === 200 || response.statusCode === 201) {
+    if (response.statusCode === 200 || response.statusCode === 201 || response.statusCode === 204) {
       core.info(`Uploaded successfully: ${localPath}`);
       successCount++;
       return true;
