@@ -167,7 +167,7 @@ async function createDirectory(directoryUrl) {
       return false;
     }
   } catch (error) {
-    core.error(`Error creating directory ${fixedDirectoryUrl}: ${error.message}`);
+    core.error(`Error creating directory ${directoryUrl}: ${error.message}`);
     return false;
   }
 }
@@ -223,6 +223,98 @@ async function deleteDirectory(directoryUrl) {
   } catch (error) {
     core.error(`Error deleting directory: ${error.message}`);
     return false;
+  }
+}
+
+// ========== 版本清理功能 ==========
+// 获取目录列表并解析创建时间
+async function listDirectoriesWithDates(parentUrl) {
+  try {
+    const fixedUrl = fixWebDavUrl(parentUrl);
+    core.info(`Listing directories in: ${fixedUrl}`);
+    
+    const depthHeader = { Depth: '1' };
+    const listResponse = await webdavRequest('PROPFIND', fixedUrl, null, depthHeader);
+
+    if (listResponse.statusCode !== 207) {
+      core.warning(`Failed to list directories: ${listResponse.statusCode}`);
+      return [];
+    }
+
+    // 解析 PROPFIND 响应获取目录和创建时间
+    const directories = [];
+    
+    // 匹配 response 元素
+    const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/gi;
+    let responseMatch;
+    
+    while ((responseMatch = responseRegex.exec(listResponse.data)) !== null) {
+      const responseContent = responseMatch[1];
+      
+      // 提取 href
+      const hrefMatch = responseContent.match(/<d:href>([^<]+)<\/d:href>/i);
+      if (!hrefMatch) continue;
+      
+      const href = decodeURIComponent(hrefMatch[1]);
+      const dirName = href.split('/').filter(p => p).pop();
+      
+      // 跳过父目录本身和 latest 目录
+      if (!dirName || dirName === 'latest') continue;
+      
+      // 提取创建时间 (creationdate)
+      const creationMatch = responseContent.match(/<d:creationdate>([^<]+)<\/d:creationdate>/i);
+      const lastModifiedMatch = responseContent.match(/<d:getlastmodified>([^<]+)<\/d:getlastmodified>/i);
+      
+      let date = null;
+      if (creationMatch) {
+        date = new Date(creationMatch[1]);
+      } else if (lastModifiedMatch) {
+        date = new Date(lastModifiedMatch[1]);
+      }
+      
+      // 构建完整 URL
+      const fullUrl = href.startsWith('http') ? href : `${WEBDAV_URL}${href.startsWith('/') ? '' : '/'}${href}`;
+      
+      directories.push({
+        name: dirName,
+        url: fullUrl,
+        date: date || new Date(0)
+      });
+    }
+
+    core.info(`Found ${directories.length} directories`);
+    return directories;
+  } catch (error) {
+    core.error(`Error listing directories: ${error.message}`);
+    return [];
+  }
+}
+
+// 清理旧版本，只保留最新的 maxVersions 个
+async function cleanupOldVersions(parentUrl, maxVersions = 10) {
+  try {
+    const directories = await listDirectoriesWithDates(parentUrl);
+    
+    if (directories.length <= maxVersions) {
+      core.info(`Found ${directories.length} version(s), no cleanup needed (limit: ${maxVersions})`);
+      return;
+    }
+
+    // 按日期排序（旧的在前）
+    directories.sort((a, b) => a.date - b.date);
+    
+    const toDelete = directories.slice(0, directories.length - maxVersions);
+    core.info(`Cleaning up ${toDelete.length} old version(s), keeping latest ${maxVersions}`);
+    
+    for (const dir of toDelete) {
+      core.info(`Deleting old version: ${dir.name} (created: ${dir.date.toISOString()})`);
+      await deleteDirectory(dir.url);
+    }
+    
+    core.info('Cleanup completed');
+  } catch (error) {
+    core.warning(`Error during cleanup: ${error.message}`);
+    // 清理失败不应阻止上传
   }
 }
 
@@ -350,6 +442,10 @@ async function main() {
   core.info(`Uploading to: ${remoteBaseUrl}`);
   core.info('====================================');
 
+  // ========== 清理旧版本（保留最新10个）==========
+  const parentUrl = `${WEBDAV_URL}${WEBDAV_ROOT ? `/${WEBDAV_ROOT}` : ''}`;
+  await cleanupOldVersions(parentUrl, 10);
+
   // 开始上传
   await uploadDirectory(SOURCE_DIRECTORY, remoteBaseUrl);
 
@@ -374,11 +470,10 @@ async function main() {
     core.info('Starting latest directory copy...');
     core.info('====================================');
 
-    // latest 目录在 webdav-root 内部，与 release 平级
-    // 例如：webdav-root = online/my-app → latest = online/my-app/latest
-    const latestBaseUrl = WEBDAV_ROOT
-      ? `${WEBDAV_URL}/${WEBDAV_ROOT}/latest`
-      : `${WEBDAV_URL}/latest`;
+    // latest 目录与 webdav-root 同级（不是在其内部）
+    // 例如：webdav-root = online/my-app → latest = online/latest
+    const rootParent = WEBDAV_ROOT ? WEBDAV_ROOT.substring(0, WEBDAV_ROOT.lastIndexOf('/')) : '';
+    const latestBaseUrl = `${WEBDAV_URL}${rootParent ? `/${rootParent}` : ''}/latest`;
     core.info(`Latest directory URL: ${latestBaseUrl}`);
 
     // 1. 清空 latest 目录
