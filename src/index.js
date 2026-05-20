@@ -291,7 +291,7 @@ async function listDirectoriesWithDates(parentUrl) {
 }
 
 // 清理旧版本，只保留最新的 maxVersions 个
-async function cleanupOldVersions(parentUrl, maxVersions = 10) {
+async function cleanupOldVersions(parentUrl, maxVersions = 5) {
   try {
     const directories = await listDirectoriesWithDates(parentUrl);
     
@@ -444,7 +444,7 @@ async function main() {
 
   // ========== 清理旧版本（保留最新10个）==========
   const parentUrl = `${WEBDAV_URL}${WEBDAV_ROOT ? `/${WEBDAV_ROOT}` : ''}`;
-  await cleanupOldVersions(parentUrl, 10);
+  await cleanupOldVersions(parentUrl, 5);
 
   // 开始上传
   await uploadDirectory(SOURCE_DIRECTORY, remoteBaseUrl);
