@@ -470,10 +470,9 @@ async function main() {
     core.info('Starting latest directory copy...');
     core.info('====================================');
 
-    // latest 目录与 webdav-root 同级（不是在其内部）
-    // 例如：webdav-root = online/my-app → latest = online/latest
-    const rootParent = WEBDAV_ROOT ? WEBDAV_ROOT.substring(0, WEBDAV_ROOT.lastIndexOf('/')) : '';
-    const latestBaseUrl = `${WEBDAV_URL}${rootParent ? `/${rootParent}` : ''}/latest`;
+    // latest 目录放在 webdav-root 内部
+    // 例如：webdav-root = online/my-app → latest = online/my-app/latest
+    const latestBaseUrl = `${WEBDAV_URL}${WEBDAV_ROOT ? `/${WEBDAV_ROOT}` : ''}/latest`;
     core.info(`Latest directory URL: ${latestBaseUrl}`);
 
     // 1. 清空 latest 目录
