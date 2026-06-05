@@ -244,32 +244,32 @@ async function listDirectoriesWithDates(parentUrl) {
     // 解析 PROPFIND 响应获取目录和创建时间
     const directories = [];
     
-    // 匹配 response 元素
-    const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/gi;
+    // 兼容不同 WebDAV 服务器的 XML 命名空间（d:, D:, 或无命名空间）
+    const responseRegex = /<(\w*:)?response>([\s\S]*?)<\/(\w*:)?response>/gi;
     let responseMatch;
     
     while ((responseMatch = responseRegex.exec(listResponse.data)) !== null) {
-      const responseContent = responseMatch[1];
+      const responseContent = responseMatch[2];
       
-      // 提取 href
-      const hrefMatch = responseContent.match(/<d:href>([^<]+)<\/d:href>/i);
+      // 提取 href - 兼容不同命名空间
+      const hrefMatch = responseContent.match(/<(\w*:)?href>([^<]+)<\/(\w*:)?href>/i);
       if (!hrefMatch) continue;
       
-      const href = decodeURIComponent(hrefMatch[1]);
+      const href = decodeURIComponent(hrefMatch[2]);
       const dirName = href.split('/').filter(p => p).pop();
       
       // 跳过父目录本身和 latest 目录
       if (!dirName || dirName === 'latest') continue;
       
-      // 提取创建时间 (creationdate)
-      const creationMatch = responseContent.match(/<d:creationdate>([^<]+)<\/d:creationdate>/i);
-      const lastModifiedMatch = responseContent.match(/<d:getlastmodified>([^<]+)<\/d:getlastmodified>/i);
+      // 提取创建时间 (creationdate) - 兼容不同命名空间
+      const creationMatch = responseContent.match(/<(\w*:)?creationdate>([^<]+)<\/(\w*:)?creationdate>/i);
+      const lastModifiedMatch = responseContent.match(/<(\w*:)?getlastmodified>([^<]+)<\/(\w*:)?getlastmodified>/i);
       
       let date = null;
       if (creationMatch) {
-        date = new Date(creationMatch[1]);
+        date = new Date(creationMatch[2]);
       } else if (lastModifiedMatch) {
-        date = new Date(lastModifiedMatch[1]);
+        date = new Date(lastModifiedMatch[2]);
       }
       
       // 构建完整 URL
