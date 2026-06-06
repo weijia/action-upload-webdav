@@ -19,9 +19,10 @@ This GitHub Action allows you to upload files to a WebDAV server. It supports au
 | `webdav-url` | WebDAV server URL | Yes | - |
 | `webdav-username` | WebDAV username | Yes | - |
 | `webdav-password` | WebDAV password | Yes | - |
-| `webdav-root` | WebDAV root directory | No | Empty string |
+| `webdav-root` | WebDAV root directory prefix | No | Empty string |
 | `source-directory` | Local directory to upload | Yes | - |
-| `upload-directory` | Remote directory to upload to (overrides automatic behavior) | No | Empty string |
+| `upload-directory` | Remote subdirectory name (overrides automatic behavior) | No | Empty string |
+| `copy-to-latest` | Also copy files to a `latest` directory under webdav-root | No | `true` |
 | `debug` | Enable debug mode | No | `false` |
 
 ## Outputs
@@ -95,13 +96,52 @@ jobs:
 
 ## How It Works
 
+### Upload Directory Logic
+
+The action automatically determines the upload subdirectory based on the current git state:
+
+| Condition | Subdirectory | Example | Behavior |
+|-----------|-------------|---------|----------|
+| Current commit has a git tag | `release` | `release/` | **Overwritten** on each tagged deploy |
+| Current commit has no git tag | ISO timestamp | `2026-06-06T02-30-00/` | **New directory** created each time |
+| Custom `upload-directory` provided | User-defined | `my-dir/` | Overrides the above rules |
+
+**Final URL structure:**
+```
+{webdav-url}/{webdav-root}/{upload-directory}/
+```
+
+Example with `webdav-root: online/my-app`:
+```
+online/
+└── my-app/
+    ├── release/              ← Tagged commits
+    ├── 2026-06-06T02-30-00/  ← Untagged commits
+    └── latest/               ← Copy of most recent upload (if copy-to-latest enabled)
+```
+
+### copy-to-latest
+
+When `copy-to-latest: true` (default):
+1. Clears the existing `{webdav-root}/latest/` directory
+2. Copies all uploaded files to `latest/`
+3. `latest/` always points to the most recent deployment
+
+### Version Cleanup
+
+Before each upload, the action automatically cleans up old versions:
+- **Keeps**: Latest 5 version directories (excluding `latest/`)
+- **Deletes**: Oldest directories first (sorted by `creationdate`)
+- **Note**: `release/` counts toward the 5-version limit
+
+### Step-by-Step Process
+
 1. **Authentication**: Uses basic authentication with the provided username and password
-2. **Directory Handling**: Automatically creates directories as needed
-3. **Upload Logic**:
-   - If a git tag is present, uploads to `release` directory
-   - If no git tag, uploads to a timestamp-based directory
-   - If custom `upload-directory` is provided, uses that instead
-4. **File Upload**: Uploads all files from the source directory recursively
+2. **Directory Decision**: Determines upload subdirectory (release / timestamp / custom)
+3. **Cleanup**: Removes old version directories if exceeding the limit
+4. **Directory Creation**: Creates the upload directory and any parent directories
+5. **File Upload**: Uploads all files from the source directory recursively
+6. **Latest Copy**: If enabled, copies files to the `latest/` directory
 
 ## Security Considerations
 
