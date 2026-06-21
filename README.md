@@ -1,96 +1,104 @@
 # Upload to WebDAV GitHub Action
 
-This GitHub Action allows you to upload files to a WebDAV server. It supports automatic directory creation and handles both tagged and untagged uploads differently.
+Upload files to any WebDAV server from GitHub Actions. Supports automatic version management, old version cleanup, and tagged/untagged deploy differentiation.
 
 ## Features
 
-- Upload files to any WebDAV server
+- Upload files to any WebDAV server (Nginx, Apache, Nextcloud, etc.)
 - Automatic directory creation (including parent directories)
-- Different upload behavior for tagged and untagged commits:
-  - Tagged commits: Uploads to a fixed `release` directory
-  - Untagged commits: Uploads to a timestamp-based directory
-- Customizable upload directory
+- Automatic version cleanup (configurable retention)
+- Different upload behavior for tagged and untagged commits
+- `latest/` directory always points to the most recent deployment
+- Compatible with various WebDAV server XML namespace formats
 - Debug mode for troubleshooting
 
 ## Inputs
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `webdav-url` | WebDAV server URL | Yes | - |
+| `webdav-url` | WebDAV server URL (e.g. `https://dav.example.com`) | Yes | - |
 | `webdav-username` | WebDAV username | Yes | - |
 | `webdav-password` | WebDAV password | Yes | - |
-| `webdav-root` | WebDAV root directory prefix | No | Empty string |
+| `webdav-root` | Root directory prefix on the server (e.g. `online/my-app`) | No | `''` |
 | `source-directory` | Local directory to upload | Yes | - |
-| `upload-directory` | Remote subdirectory name (overrides automatic behavior) | No | Empty string |
-| `copy-to-latest` | Also copy files to a `latest` directory under webdav-root | No | `true` |
-| `debug` | Enable debug mode | No | `false` |
+| `upload-directory` | Remote subdirectory name. Overrides automatic behavior. | No | `''` |
+| `copy-to-latest` | Copy files to `latest/` directory under `webdav-root` | No | `true` |
+| `keep-versions` | Number of old version directories to keep. Set to `0` to disable cleanup. | No | `5` |
+| `debug` | Enable debug mode for detailed logging | No | `false` |
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `upload-url` | The URL where files were uploaded to |
+| `upload-url` | The URL where files were uploaded |
+| `latest-url` | The URL of the `latest/` directory (if `copy-to-latest` is enabled) |
 
 ## Example Usage
 
 ### Basic Usage
 
 ```yaml
-name: Build and Upload to WebDAV
+name: Build and Deploy
 
 on:
   push:
     branches:
       - main
     tags:
-      - '**'
+      - 'v*'
 
 jobs:
-  upload:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build project
-        run: |
-          # Your build commands here
-          mkdir -p dist
-          echo "Hello World" > dist/index.html
+      - name: Build
+        run: npm run build
 
-      - name: Upload to WebDAV
-        uses: yourusername/action-upload-webdav@v1
+      - uses: weijia/action-upload-webdav@master
         with:
           webdav-url: ${{ secrets.WEBDAV_URL }}
           webdav-username: ${{ secrets.WEBDAV_USERNAME }}
           webdav-password: ${{ secrets.WEBDAV_PASSWORD }}
-          webdav-root: my-app
-          source-directory: dist
+          webdav-root: online/my-app
+          source-directory: ./dist
 ```
 
-### Custom Upload Directory
+### With Custom Upload Directory
 
 ```yaml
-- name: Upload to WebDAV with custom directory
-  uses: yourusername/action-upload-webdav@v1
+- uses: weijia/action-upload-webdav@master
   with:
     webdav-url: ${{ secrets.WEBDAV_URL }}
     webdav-username: ${{ secrets.WEBDAV_USERNAME }}
     webdav-password: ${{ secrets.WEBDAV_PASSWORD }}
-    source-directory: dist
-    upload-directory: my-custom-directory
+    source-directory: ./dist
+    upload-directory: staging
+```
+
+### With Custom Version Retention
+
+```yaml
+- uses: weijia/action-upload-webdav@master
+  with:
+    webdav-url: ${{ secrets.WEBDAV_URL }}
+    webdav-username: ${{ secrets.WEBDAV_USERNAME }}
+    webdav-password: ${{ secrets.WEBDAV_PASSWORD }}
+    webdav-root: online/my-app
+    source-directory: ./dist
+    keep-versions: 10    # Keep 10 versions instead of default 5
 ```
 
 ### Debug Mode
 
 ```yaml
-- name: Upload to WebDAV with debug mode
-  uses: yourusername/action-upload-webdav@v1
+- uses: weijia/action-upload-webdav@master
   with:
     webdav-url: ${{ secrets.WEBDAV_URL }}
     webdav-username: ${{ secrets.WEBDAV_USERNAME }}
     webdav-password: ${{ secrets.WEBDAV_PASSWORD }}
-    source-directory: dist
+    source-directory: ./dist
     debug: true
 ```
 
@@ -102,52 +110,93 @@ The action automatically determines the upload subdirectory based on the current
 
 | Condition | Subdirectory | Example | Behavior |
 |-----------|-------------|---------|----------|
-| Current commit has a git tag | `release` | `release/` | **Overwritten** on each tagged deploy |
-| Current commit has no git tag | ISO timestamp | `2026-06-06T02-30-00/` | **New directory** created each time |
-| Custom `upload-directory` provided | User-defined | `my-dir/` | Overrides the above rules |
+| `upload-directory` is set | User-defined | `staging/` | Overrides all automatic behavior |
+| Current commit has a git tag | `release` | `release/` | Overwritten on each tagged deploy |
+| Current commit has no git tag | ISO timestamp | `2026-06-20T12-30-00/` | New directory created each time |
 
-**Final URL structure:**
-```
-{webdav-url}/{webdav-root}/{upload-directory}/
-```
+### Directory Structure
 
-Example with `webdav-root: online/my-app`:
+With `webdav-root: online/my-app`:
+
 ```
 online/
 └── my-app/
-    ├── release/              ← Tagged commits
-    ├── 2026-06-06T02-30-00/  ← Untagged commits
-    └── latest/               ← Copy of most recent upload (if copy-to-latest enabled)
+    ├── release/              ← Tagged commits (overwritten)
+    ├── 2026-06-20T12-30-00/  ← Untagged commits (new each time)
+    ├── 2026-06-19T08-15-00/  ← Older untagged deploy
+    └── latest/               ← Always points to most recent upload
 ```
+
+### Version Cleanup
+
+Before each upload, the action automatically cleans up old version directories:
+
+1. Lists all subdirectories under `webdav-root` (excluding `latest/`)
+2. Sorts them by date (oldest first)
+3. Deletes the oldest directories, keeping only the number specified by `keep-versions`
+4. Set `keep-versions: 0` to disable cleanup entirely
+
+Date detection uses a multi-strategy approach for maximum compatibility:
+1. WebDAV `creationdate` property
+2. WebDAV `getlastmodified` property
+3. Parsing the directory name (for ISO timestamp directories like `2026-06-20T12-30-00`)
 
 ### copy-to-latest
 
 When `copy-to-latest: true` (default):
+
 1. Clears the existing `{webdav-root}/latest/` directory
-2. Copies all uploaded files to `latest/`
-3. `latest/` always points to the most recent deployment
-
-### Version Cleanup
-
-Before each upload, the action automatically cleans up old versions:
-- **Keeps**: Latest 5 version directories (excluding `latest/`)
-- **Deletes**: Oldest directories first (sorted by `creationdate`)
-- **Note**: `release/` counts toward the 5-version limit
+2. Uploads all files to `latest/`
+3. `latest/` always reflects the most recent deployment
 
 ### Step-by-Step Process
 
-1. **Authentication**: Uses basic authentication with the provided username and password
-2. **Directory Decision**: Determines upload subdirectory (release / timestamp / custom)
-3. **Cleanup**: Removes old version directories if exceeding the limit
-4. **Directory Creation**: Creates the upload directory and any parent directories
-5. **File Upload**: Uploads all files from the source directory recursively
-6. **Latest Copy**: If enabled, copies files to the `latest/` directory
+1. **Authentication** - Basic auth with provided credentials
+2. **Directory Decision** - Determines upload subdirectory
+3. **Cleanup** - Removes old version directories if exceeding limit
+4. **Directory Creation** - Creates upload directory and parent directories
+5. **File Upload** - Uploads all files recursively
+6. **Latest Copy** - If enabled, copies files to `latest/`
 
-## Security Considerations
+## WebDAV Server Compatibility
 
-- **Secrets**: Always store WebDAV credentials as GitHub Secrets, never hardcode them
-- **Permissions**: Ensure your WebDAV server has appropriate permissions for the user
-- **URLs**: Use HTTPS for WebDAV URLs to encrypt traffic
+This action has been tested and is compatible with:
+
+- **Nginx** (with `ngx_http_dav_module` or `nginx-dav-ext-module`)
+- **Apache** (with `mod_dav` / `mod_dav_fs`)
+- **Nextcloud** / **ownCloud**
+- **rclone serve webdav**
+- Any RFC 4918 compliant WebDAV server
+
+The XML parser handles various namespace formats: `d:`, `D:`, `lp1:`, or no namespace prefix.
+
+## Troubleshooting
+
+### Enable Debug Mode
+
+Set `debug: true` to see detailed request/response logs:
+
+```yaml
+- uses: weijia/action-upload-webdav@master
+  with:
+    debug: true
+    # ... other inputs
+```
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| `403 Forbidden` | Check WebDAV server permissions for write access |
+| `409 Conflict` | The action will auto-create parent directories |
+| Old directories not being cleaned | Enable `debug: true` and check the date parsing logs. Some servers may not return `creationdate`. The action falls back to parsing directory names. |
+| Upload fails silently | Check GitHub Actions log for `[ERROR]` messages |
+
+## Security
+
+- Store WebDAV credentials as **GitHub Secrets**, never hardcode them
+- Use **HTTPS** URLs for encrypted traffic
+- Ensure your WebDAV server has appropriate write permissions
 
 ## License
 

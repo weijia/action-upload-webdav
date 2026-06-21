@@ -14,6 +14,7 @@ const SOURCE_DIRECTORY = core.getInput('source-directory');
 const UPLOAD_DIRECTORY = core.getInput('upload-directory') || '';
 const COPY_TO_LATEST = core.getInput('copy-to-latest') === 'true';
 const DEBUG = core.getInput('debug') === 'true';
+const KEEP_VERSIONS = parseInt(core.getInput('keep-versions') || '5', 10);
 
 // 上传成功和失败计数
 let successCount = 0;
@@ -105,8 +106,8 @@ function webdavRequest(method, url, body = null, headers = {}) {
             core.info(`[DEBUG] Response data: ${data}`);
           }
 
-          // 处理 301 重定向
-          if (res.statusCode === 301 && res.headers.location) {
+          // 处理 301/302/307 重定向
+          if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
             core.info(`[DEBUG] Redirecting to: ${res.headers.location}`);
             webdavRequest(method, res.headers.location, body, headers)
               .then(resolve)
@@ -183,13 +184,8 @@ async function deleteDirectory(directoryUrl) {
     const listResponse = await webdavRequest('PROPFIND', fixedDirectoryUrl, null, depthHeader);
 
     if (listResponse.statusCode === 207) {
-      // 解析 XML 获取所有子资源的 URL
-      const hrefRegex = /<d:href>([^<]+)<\/d:href>/gi;
-      const hrefs = [];
-      let match;
-      while ((match = hrefRegex.exec(listResponse.data)) !== null) {
-        hrefs.push(match[1]);
-      }
+      // 解析 XML 获取所有子资源的 URL - 兼容多种命名空间
+      const hrefs = extractHrefs(listResponse.data);
 
       // 从最深层开始删除（倒序，排除目录本身）
       const sortedHrefs = hrefs
@@ -198,10 +194,8 @@ async function deleteDirectory(directoryUrl) {
         .sort((a, b) => b.split('/').length - a.split('/').length);
 
       for (const href of sortedHrefs) {
-        const isDir = href.endsWith('/');
-        const method = isDir ? 'DELETE' : 'DELETE';
         const fullHref = href.startsWith("http") ? href : `${WEBDAV_URL}${href.startsWith("/") ? "" : "/"}${href}`;
-        const delResponse = await webdavRequest(method, fullHref);
+        const delResponse = await webdavRequest('DELETE', fullHref);
         if (delResponse.statusCode === 204 || delResponse.statusCode === 200) {
           core.info(`Deleted: ${href}`);
         } else {
@@ -226,13 +220,113 @@ async function deleteDirectory(directoryUrl) {
   }
 }
 
+// ========== XML 解析辅助函数 ==========
+
+/**
+ * 从 WebDAV PROPFIND 响应中提取所有 href
+ * 兼容多种 XML 命名空间格式：
+ *   <d:href>...</d:href>
+ *   <D:href>...</D:href>
+ *   <href>...</href>
+ *   以及带 XML 命名空间声明的各种变体
+ */
+function extractHrefs(xmlData) {
+  const hrefs = [];
+  // 匹配任意命名空间前缀的 href 标签
+  const hrefRegex = /<(?:\w+:)?href\s*>([^<]+)<\/(?:\w+:)?href\s*>/gi;
+  let match;
+  while ((match = hrefRegex.exec(xmlData)) !== null) {
+    hrefs.push(match[1].trim());
+  }
+  return hrefs;
+}
+
+/**
+ * 从单个 WebDAV response 块中提取指定属性值
+ * 兼容多种 XML 命名空间格式
+ */
+function extractPropValue(responseContent, propName) {
+  // 匹配任意命名空间前缀的属性标签
+  const regex = new RegExp(`<(?:\\w+:)?${propName}\\s*>([^<]+)<\\/(?:\\w+:)?${propName}\\s*>`, 'i');
+  const match = responseContent.match(regex);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * 从单个 WebDAV response 块中提取 href
+ */
+function extractResponseHref(responseContent) {
+  return extractPropValue(responseContent, 'href');
+}
+
+/**
+ * 尝试从字符串中解析日期
+ * 支持多种常见日期格式：
+ *   - ISO 8601: 2026-06-20T12:30:00Z
+ *   - RFC 1123: Fri, 20 Jun 2026 12:30:00 GMT
+ *   - HTTP 日期格式
+ *   - 带时区的 ISO 格式
+ */
+function parseDate(dateStr) {
+  if (!dateStr) return null;
+
+  // 直接尝试标准解析
+  let d = new Date(dateStr);
+  if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
+    return d;
+  }
+
+  // 尝试清理常见格式问题
+  // 有些服务器返回的日期可能有多余空格或特殊字符
+  const cleaned = dateStr.replace(/\s+/g, ' ').trim();
+  d = new Date(cleaned);
+  if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
+    return d;
+  }
+
+  // 尝试替换特殊分隔符
+  const normalized = dateStr.replace(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.\d+/, '$1-$2-$3T$4:$5:$6');
+  d = new Date(normalized);
+  if (!isNaN(d.getTime()) && d.getFullYear() > 2000) {
+    return d;
+  }
+
+  core.warning(`[DATE] Failed to parse date string: "${dateStr}"`);
+  return null;
+}
+
+/**
+ * 尝试从目录名中解析时间戳
+ * 支持格式：
+ *   - ISO 时间戳: 2026-06-20T12-30-00
+ *   - 简单日期: 2026-06-20
+ */
+function parseDateFromDirName(dirName) {
+  // ISO 时间戳格式: 2026-06-20T12-30-00 (action 生成的格式)
+  const isoMatch = dirName.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, y, m, d, h, min, s] = isoMatch;
+    return new Date(`${y}-${m}-${d}T${h}:${min}:${s}Z`);
+  }
+
+  // 简单日期格式: 2026-06-20
+  const dateMatch = dirName.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateMatch) {
+    const [, y, m, d] = dateMatch;
+    return new Date(`${y}-${m}-${d}T00:00:00Z`);
+  }
+
+  return null;
+}
+
 // ========== 版本清理功能 ==========
+
 // 获取目录列表并解析创建时间
 async function listDirectoriesWithDates(parentUrl) {
   try {
     const fixedUrl = fixWebDavUrl(parentUrl);
     core.info(`Listing directories in: ${fixedUrl}`);
-    
+
     const depthHeader = { Depth: '1' };
     const listResponse = await webdavRequest('PROPFIND', fixedUrl, null, depthHeader);
 
@@ -241,48 +335,83 @@ async function listDirectoriesWithDates(parentUrl) {
       return [];
     }
 
+    if (DEBUG) {
+      core.info(`[DEBUG] PROPFIND raw response:\n${listResponse.data.substring(0, 2000)}`);
+    }
+
     // 解析 PROPFIND 响应获取目录和创建时间
     const directories = [];
-    
-    // 兼容不同 WebDAV 服务器的 XML 命名空间（d:, D:, 或无命名空间）
-    const responseRegex = /<(\w*:)?response>([\s\S]*?)<\/(\w*:)?response>/gi;
+
+    // 兼容不同 WebDAV 服务器的 XML 命名空间（d:, D:, lp1:, 或无命名空间）
+    const responseRegex = /<(?:\w+:)?response[\s>][\s\S]*?<\/(?:\w+:)?response>/gi;
     let responseMatch;
-    
+
     while ((responseMatch = responseRegex.exec(listResponse.data)) !== null) {
-      const responseContent = responseMatch[2];
-      
+      const responseContent = responseMatch[0];
+
       // 提取 href - 兼容不同命名空间
-      const hrefMatch = responseContent.match(/<(\w*:)?href>([^<]+)<\/(\w*:)?href>/i);
-      if (!hrefMatch) continue;
-      
-      const href = decodeURIComponent(hrefMatch[2]);
-      const dirName = href.split('/').filter(p => p).pop();
-      
+      const href = extractResponseHref(responseContent);
+      if (!href) continue;
+
+      const decodedHref = decodeURIComponent(href);
+      const dirName = decodedHref.split('/').filter(p => p).pop();
+
       // 跳过父目录本身和 latest 目录
       if (!dirName || dirName === 'latest') continue;
-      
-      // 提取创建时间 (creationdate) - 兼容不同命名空间
-      const creationMatch = responseContent.match(/<(\w*:)?creationdate>([^<]+)<\/(\w*:)?creationdate>/i);
-      const lastModifiedMatch = responseContent.match(/<(\w*:)?getlastmodified>([^<]+)<\/(\w*:)?getlastmodified>/i);
-      
+
+      // 尝试多种方式获取日期
       let date = null;
-      if (creationMatch) {
-        date = new Date(creationMatch[2]);
-      } else if (lastModifiedMatch) {
-        date = new Date(lastModifiedMatch[2]);
+
+      // 1. 尝试 creationdate
+      const creationStr = extractPropValue(responseContent, 'creationdate');
+      if (creationStr) {
+        date = parseDate(creationStr);
+        if (date) {
+          if (DEBUG) core.info(`[DEBUG] ${dirName}: creationdate = "${creationStr}" -> ${date.toISOString()}`);
+        }
       }
-      
+
+      // 2. 尝试 getlastmodified
+      if (!date) {
+        const lastModStr = extractPropValue(responseContent, 'getlastmodified');
+        if (lastModStr) {
+          date = parseDate(lastModStr);
+          if (date) {
+            if (DEBUG) core.info(`[DEBUG] ${dirName}: getlastmodified = "${lastModStr}" -> ${date.toISOString()}`);
+          }
+        }
+      }
+
+      // 3. 尝试从目录名解析时间戳（对 action 自己创建的 ISO 时间戳目录最有效）
+      if (!date) {
+        date = parseDateFromDirName(dirName);
+        if (date) {
+          if (DEBUG) core.info(`[DEBUG] ${dirName}: parsed from directory name -> ${date.toISOString()}`);
+        }
+      }
+
+      // 如果所有方式都失败，使用 Date(0) 并在日志中警告
+      if (!date) {
+        date = new Date(0);
+        core.warning(`[CLEANUP] Could not determine date for directory "${dirName}", using epoch as fallback`);
+      }
+
       // 构建完整 URL
-      const fullUrl = href.startsWith('http') ? href : `${WEBDAV_URL}${href.startsWith('/') ? '' : '/'}${href}`;
-      
+      const fullUrl = decodedHref.startsWith('http') ? decodedHref : `${WEBDAV_URL}${decodedHref.startsWith('/') ? '' : '/'}${decodedHref}`;
+
       directories.push({
         name: dirName,
         url: fullUrl,
-        date: date || new Date(0)
+        date: date
       });
     }
 
     core.info(`Found ${directories.length} directories`);
+    if (DEBUG) {
+      for (const dir of directories) {
+        core.info(`[DEBUG]   ${dir.name} -> ${dir.date.toISOString()}`);
+      }
+    }
     return directories;
   } catch (error) {
     core.error(`Error listing directories: ${error.message}`);
@@ -291,10 +420,10 @@ async function listDirectoriesWithDates(parentUrl) {
 }
 
 // 清理旧版本，只保留最新的 maxVersions 个
-async function cleanupOldVersions(parentUrl, maxVersions = 5) {
+async function cleanupOldVersions(parentUrl, maxVersions) {
   try {
     const directories = await listDirectoriesWithDates(parentUrl);
-    
+
     if (directories.length <= maxVersions) {
       core.info(`Found ${directories.length} version(s), no cleanup needed (limit: ${maxVersions})`);
       return;
@@ -302,15 +431,15 @@ async function cleanupOldVersions(parentUrl, maxVersions = 5) {
 
     // 按日期排序（旧的在前）
     directories.sort((a, b) => a.date - b.date);
-    
+
     const toDelete = directories.slice(0, directories.length - maxVersions);
     core.info(`Cleaning up ${toDelete.length} old version(s), keeping latest ${maxVersions}`);
-    
+
     for (const dir of toDelete) {
-      core.info(`Deleting old version: ${dir.name} (created: ${dir.date.toISOString()})`);
+      core.info(`Deleting old version: ${dir.name} (date: ${dir.date.toISOString()})`);
       await deleteDirectory(dir.url);
     }
-    
+
     core.info('Cleanup completed');
   } catch (error) {
     core.warning(`Error during cleanup: ${error.message}`);
@@ -387,7 +516,13 @@ function getContentType(filePath) {
     '.woff': 'font/woff',
     '.woff2': 'font/woff2',
     '.ttf': 'font/ttf',
-    '.eot': 'application/vnd.ms-fontobject'
+    '.eot': 'application/vnd.ms-fontobject',
+    '.wasm': 'application/wasm',
+    '.webp': 'image/webp',
+    '.ico': 'image/x-icon',
+    '.map': 'application/json',
+    '.txt': 'text/plain',
+    '.xml': 'application/xml',
   };
   return contentTypes[ext] || 'application/octet-stream';
 }
@@ -431,6 +566,7 @@ async function main() {
   core.info(`WebDAV Root: ${WEBDAV_ROOT || '(empty)'}`);
   core.info(`Source Directory: ${SOURCE_DIRECTORY}`);
   core.info(`Copy to Latest: ${COPY_TO_LATEST}`);
+  core.info(`Keep Versions: ${KEEP_VERSIONS}`);
   core.info('====================================');
 
   // 获取上传目录
@@ -442,9 +578,9 @@ async function main() {
   core.info(`Uploading to: ${remoteBaseUrl}`);
   core.info('====================================');
 
-  // ========== 清理旧版本（保留最新10个）==========
+  // ========== 清理旧版本 ==========
   const parentUrl = `${WEBDAV_URL}${WEBDAV_ROOT ? `/${WEBDAV_ROOT}` : ''}`;
-  await cleanupOldVersions(parentUrl, 5);
+  await cleanupOldVersions(parentUrl, KEEP_VERSIONS);
 
   // 开始上传
   await uploadDirectory(SOURCE_DIRECTORY, remoteBaseUrl);
@@ -471,7 +607,6 @@ async function main() {
     core.info('====================================');
 
     // latest 目录放在 webdav-root 内部
-    // 例如：webdav-root = online/my-app → latest = online/my-app/latest
     const latestBaseUrl = `${WEBDAV_URL}${WEBDAV_ROOT ? `/${WEBDAV_ROOT}` : ''}/latest`;
     core.info(`Latest directory URL: ${latestBaseUrl}`);
 

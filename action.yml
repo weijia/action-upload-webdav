@@ -1,10 +1,10 @@
 name: 'Upload to WebDAV'
-description: 'Upload files to WebDAV server'
-author: 'Your Name'
+description: 'Upload files to a WebDAV server with automatic version management and cleanup'
+author: 'weijia'
 
 inputs:
   webdav-url:
-    description: 'WebDAV server URL'
+    description: 'WebDAV server URL (e.g. https://dav.example.com)'
     required: true
   webdav-username:
     description: 'WebDAV username'
@@ -13,22 +13,26 @@ inputs:
     description: 'WebDAV password'
     required: true
   webdav-root:
-    description: 'WebDAV root directory'
+    description: 'Root directory prefix on the WebDAV server (e.g. "online/my-app")'
     required: false
     default: ''
   source-directory:
     description: 'Local directory to upload'
     required: true
   upload-directory:
-    description: 'Remote directory to upload to (defaults to timestamp or "release" for tagged versions)'
+    description: 'Remote subdirectory name. Overrides automatic behavior. Defaults to timestamp for untagged commits, "release" for tagged commits.'
     required: false
     default: ''
   copy-to-latest:
-    description: 'Also copy files to a "latest" directory under webdav-root (clears existing latest directory first)'
+    description: 'Copy uploaded files to a "latest" directory under webdav-root (clears existing latest directory first)'
     required: false
     default: 'true'
+  keep-versions:
+    description: 'Number of old version directories to keep before cleanup. Set to 0 to disable cleanup.'
+    required: false
+    default: '5'
   debug:
-    description: 'Enable debug mode'
+    description: 'Enable debug mode for detailed logging'
     required: false
     default: 'false'
 
