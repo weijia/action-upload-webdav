@@ -183,6 +183,12 @@ async function deleteDirectory(directoryUrl) {
     const depthHeader = { Depth: '1' };
     const listResponse = await webdavRequest('PROPFIND', fixedDirectoryUrl, null, depthHeader);
 
+    // 如果目录不存在（404），直接返回成功
+    if (listResponse.statusCode === 404) {
+      core.info(`Directory not found (404), skipping: ${fixedDirectoryUrl}`);
+      return true;
+    }
+
     if (listResponse.statusCode === 207) {
       // 解析 XML 获取所有子资源的 URL - 兼容多种命名空间
       const hrefs = extractHrefs(listResponse.data);
@@ -198,6 +204,9 @@ async function deleteDirectory(directoryUrl) {
         const delResponse = await webdavRequest('DELETE', fullHref);
         if (delResponse.statusCode === 204 || delResponse.statusCode === 200) {
           core.info(`Deleted: ${href}`);
+        } else if (delResponse.statusCode === 404) {
+          // 文件不存在，忽略
+          core.info(`File not found (404), skipping: ${href}`);
         } else {
           core.warning(`Failed to delete ${href}: ${delResponse.statusCode}`);
         }
@@ -208,6 +217,10 @@ async function deleteDirectory(directoryUrl) {
     const deleteResponse = await webdavRequest('DELETE', fixedDirectoryUrl);
     if (deleteResponse.statusCode === 204 || deleteResponse.statusCode === 200) {
       core.info(`Directory deleted successfully: ${fixedDirectoryUrl}`);
+      return true;
+    } else if (deleteResponse.statusCode === 404) {
+      // 目录不存在，视为成功
+      core.info(`Directory not found (404), already deleted: ${fixedDirectoryUrl}`);
       return true;
     } else {
       core.warning(`Failed to delete directory ${fixedDirectoryUrl}: ${deleteResponse.statusCode} - ${deleteResponse.data}`);
